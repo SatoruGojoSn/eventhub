@@ -1,0 +1,10 @@
+# Normalise les fins de ligne : LF dans le depot, quelle que soit la plateforme.
+# Evite que des fichiers commites depuis Windows (CRLF) cassent dans les
+# conteneurs Linux.
+* text=auto eol=lf
+
+# Fichiers binaires : aucune conversion
+*.png binary
+*.jpg binary
+*.pdf binary
+*.ico binary
