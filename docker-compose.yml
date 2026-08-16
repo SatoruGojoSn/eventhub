@@ -1,0 +1,155 @@
+# =============================================================================
+# EventHub - Orchestration complete de la plateforme (BONUS de l'examen)
+#
+#   docker compose up -d --build     lance toute la stack
+#   docker compose ps                etat des conteneurs
+#   docker compose logs -f <service> journaux d'un service
+#   docker compose down -v           arret + suppression des volumes
+#
+# Frontend : http://localhost:8080
+# =============================================================================
+
+name: eventhub
+
+services:
+  # ---------------------------------------------------------------------------
+  # Base de donnees relationnelle partagee (3 bases logiques, une par service)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: eventhub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eventhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventhub}
+      POSTGRES_DB: ${POSTGRES_DB:-eventhub}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Volume nomme : les donnees survivent a `docker compose down`
+      - postgres-data:/var/lib/postgresql/data
+      # Scripts joues au premier demarrage (creation des 3 bases)
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eventhub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - eventhub-net
+
+  # ---------------------------------------------------------------------------
+  # Microservice 1 : evenements
+  # ---------------------------------------------------------------------------
+  events-service:
+    build:
+      context: ./events-service
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-eventhub}/events-service:${TAG:-latest}
+    container_name: eventhub-events
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-eventhub}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-eventhub}
+      DB_NAME: eventhub_events
+      REGISTRATIONS_SERVICE_URL: http://registrations-service:3003
+    ports:
+      - "${EVENTS_PORT:-3001}:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+
+  # ---------------------------------------------------------------------------
+  # Microservice 2 : participants
+  # ---------------------------------------------------------------------------
+  participants-service:
+    build:
+      context: ./participants-service
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-eventhub}/participants-service:${TAG:-latest}
+    container_name: eventhub-participants
+    restart: unless-stopped
+    environment:
+      PORT: 3002
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-eventhub}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-eventhub}
+      DB_NAME: eventhub_participants
+    ports:
+      - "${PARTICIPANTS_PORT:-3002}:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+
+  # ---------------------------------------------------------------------------
+  # Microservice 3 : inscriptions (orchestre les deux autres)
+  # ---------------------------------------------------------------------------
+  registrations-service:
+    build:
+      context: ./registrations-service
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-eventhub}/registrations-service:${TAG:-latest}
+    container_name: eventhub-registrations
+    restart: unless-stopped
+    environment:
+      PORT: 3003
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-eventhub}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-eventhub}
+      DB_NAME: eventhub_registrations
+      EVENTS_SERVICE_URL: http://events-service:3001
+      PARTICIPANTS_SERVICE_URL: http://participants-service:3002
+    ports:
+      - "${REGISTRATIONS_PORT:-3003}:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      events-service:
+        condition: service_healthy
+      participants-service:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+
+  # ---------------------------------------------------------------------------
+  # Frontend React servi par Nginx, qui fait aussi office de passerelle API
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-eventhub}/frontend:${TAG:-latest}
+    container_name: eventhub-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      events-service:
+        condition: service_healthy
+      participants-service:
+        condition: service_healthy
+      registrations-service:
+        condition: service_healthy
+    networks:
+      - eventhub-net
+
+networks:
+  eventhub-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+    driver: local
